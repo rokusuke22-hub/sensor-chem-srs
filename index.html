@@ -62,6 +62,14 @@ function loadState() { try { var s = localStorage.getItem(STORAGE_KEY); if (s) r
 function saveState(state) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){} }
 function getLocalTs() { return Number(localStorage.getItem(STORAGE_KEY + "-ts") || 0); }
 
+// ========================================
+// _cloudDirty: stateが変更されてから未pushならtrue
+// pushCloudLiteはdirty=trueの場合のみ送信する。
+// データ未変更でのvisibilitychange発火による無駄な
+// POST（タイムスタンプだけ更新→偽ダイアログ）を防止。
+// ========================================
+var _cloudDirty = false;
+
 function fetchCloud(url) {
   var rid = "fetch_" + Date.now() + "_" + Math.random().toString(36).substr(2,9);
   return fetch(url + "?action=read&_t=" + Date.now() + "&id=" + rid, { redirect: "follow" }).then(function(r){return r.json();}).then(function(d){ if(d.status==="ok") return d; throw new Error(d.message||"cloud error"); });
@@ -85,6 +93,7 @@ function pushCloud(url, state) {
 // ========================================
 function pushCloudLite(url, stateData) {
   if (!url) return;
+  if (!_cloudDirty) { console.log("[pushCloudLite] skipped (no pending changes)"); return; }
   var ts = Date.now();
   var rid = "lite_" + ts + "_" + Math.random().toString(36).substr(2, 9);
   console.log("[pushCloudLite] fire-and-forget POST. id=" + rid);
@@ -152,7 +161,7 @@ function App(){
   var words=state.words, settings=state.settings||defaultSettings;
 
   useEffect(function(){saveState(state);},[state]);
-  useEffect(function(){var u=getGasUrl(settings);if(!u)return;if(!initialSyncDone.current)return;if(skipNextPush.current){skipNextPush.current=false;return;}if(syncPushTimer.current)clearTimeout(syncPushTimer.current);syncPushTimer.current=setTimeout(function(){var lt=getLocalTs();setSyncStatus("syncing");fetchCloud(u).then(function(cl){if(cl.timestamp>lt){setSyncStatus("");setPendingCloudData({data:cl.data,ts:cl.timestamp});setShowSyncDialog(true);return;}return pushCloud(u,state).then(function(){setSyncStatus("synced");setTimeout(function(){setSyncStatus("");},2000);});}).catch(function(){setSyncStatus("offline");});},3000);return function(){if(syncPushTimer.current)clearTimeout(syncPushTimer.current);};},[state,getGasUrl(settings)]);
+  useEffect(function(){var u=getGasUrl(settings);if(!u)return;if(!initialSyncDone.current)return;if(skipNextPush.current){skipNextPush.current=false;return;}_cloudDirty=true;if(syncPushTimer.current)clearTimeout(syncPushTimer.current);syncPushTimer.current=setTimeout(function(){var lt=getLocalTs();setSyncStatus("syncing");fetchCloud(u).then(function(cl){if(cl.timestamp>lt){setSyncStatus("");setPendingCloudData({data:cl.data,ts:cl.timestamp});setShowSyncDialog(true);return;}return pushCloud(u,state).then(function(){_cloudDirty=false;setSyncStatus("synced");setTimeout(function(){setSyncStatus("");},2000);});}).catch(function(){setSyncStatus("offline");});},3000);return function(){if(syncPushTimer.current)clearTimeout(syncPushTimer.current);};},[state,getGasUrl(settings)]);
   useEffect(function(){var u=getGasUrl(settings);if(!u){initialSyncDone.current=true;return;}setSyncStatus("syncing");fetchCloud(u).then(function(cl){if(!cl.data){initialSyncDone.current=true;setSyncStatus("");return;}if(cl.timestamp>getLocalTs()){setPendingCloudData({data:cl.data,ts:cl.timestamp});setShowSyncDialog(true);}initialSyncDone.current=true;setSyncStatus("");}).catch(function(){initialSyncDone.current=true;setSyncStatus("offline");});},[]);
   useEffect(function(){var u=getGasUrl(settings);if(!u)return;var pid=setInterval(function(){if(!initialSyncDone.current||showSyncDialog)return;var lt=getLocalTs();fetchCloud(u).then(function(cl){if(cl.data&&cl.timestamp>lt){setPendingCloudData({data:cl.data,ts:cl.timestamp});setShowSyncDialog(true);}}).catch(function(){});},30000);return function(){clearInterval(pid);};},[getGasUrl(settings),showSyncDialog]);
 
@@ -168,6 +177,7 @@ function App(){
     setSyncStatus("syncing");
     pushCloud(u, state).then(function() {
       console.log("[REVIEW DONE SYNC] 同期成功");
+      _cloudDirty=false;
       setSyncStatus("synced");
       setTimeout(function() { setSyncStatus(""); }, 2000);
     }).catch(function(err) {
@@ -219,7 +229,7 @@ function App(){
   function exportJSON(){var b=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});var u=URL.createObjectURL(b);var a=document.createElement("a");a.href=u;a.download=CFG.EXPORT_PREFIX+"-"+today()+".json";a.click();URL.revokeObjectURL(u);}
   function importJSON(text){try{var d=JSON.parse(text);if(d.words&&d.settings){setState(d);return"\u30c7\u30fc\u30bf\u3092\u5fa9\u5143";}return"\u5f62\u5f0f\u304c\u6b63\u3057\u304f\u3042\u308a\u307e\u305b\u3093";}catch(ex){return"JSON\u89e3\u6790\u5931\u6557";}}
 
-  function acceptCloud(){if(pendingCloudData){skipNextPush.current=true;var cd=pendingCloudData.data||{};var ms={words:cd.words||state.words,settings:Object.assign({},state.settings,cd.settings||{})};delete ms.settings.gasUrl;setState(ms);try{localStorage.setItem(STORAGE_KEY,JSON.stringify(ms));localStorage.setItem(STORAGE_KEY+"-ts",String(pendingCloudData.ts));}catch(ex){}}setShowSyncDialog(false);setPendingCloudData(null);}
+  function acceptCloud(){if(pendingCloudData){_cloudDirty=false;skipNextPush.current=true;var cd=pendingCloudData.data||{};var ms={words:cd.words||state.words,settings:Object.assign({},state.settings,cd.settings||{})};delete ms.settings.gasUrl;setState(ms);try{localStorage.setItem(STORAGE_KEY,JSON.stringify(ms));localStorage.setItem(STORAGE_KEY+"-ts",String(pendingCloudData.ts));}catch(ex){}}setShowSyncDialog(false);setPendingCloudData(null);}
   function rejectCloud(){setShowSyncDialog(false);setPendingCloudData(null);var u=getGasUrl(settings);if(u)pushCloud(u,state).catch(function(){});}
 
   var todayCount=todayReviews.length;
