@@ -81,7 +81,7 @@ function pushCloud(url, state) {
   .then(function(){return new Promise(function(r){setTimeout(r,1500);});})
   .then(function(){return fetch(url+"?action=read&_t="+Date.now()+"&id="+rid,{redirect:"follow"});})
   .then(function(r){return r.json();}).then(function(d){
-    if(d.status==="ok"&&d.timestamp>=ts){localStorage.setItem(STORAGE_KEY+"-ts",String(d.timestamp));return d;}
+    if(d.status==="ok"&&d.timestamp>=ts){localStorage.setItem(STORAGE_KEY+"-ts", String(Math.max(d.timestamp, getLocalTs())));return d;}
     var enc=encodeURIComponent(JSON.stringify(state)); if(enc.length<7000) return fetch(url+"?action=write&ts="+ts+"&data="+enc+"&id="+rid+"&_t="+ts,{redirect:"follow"}).then(function(r2){return r2.json();});
     throw new Error("sync_verify_failed");
   });
